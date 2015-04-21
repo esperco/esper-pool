@@ -1,0 +1,13 @@
+OCAML_LIBS = $(OCAML_LIBS_pool)
+
+FILES[] =
+  pool
+
+OCamlLibrary(pool, $(FILES))
+Meta(pool)
+
+.DEFAULT: META pool.cma pool.cmxa
+
+.PHONY: clean
+clean:
+	rm -f *.o *.a *.cm* *~ *.annot *.run *.opt META $(ATDGEN_OUTFILES)
