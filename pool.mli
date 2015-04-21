@@ -15,3 +15,5 @@ module type S = sig
 end
 
 module Make : functor (C : Connection) -> S with type conn = C.conn
+
+val tests : (string * (unit -> bool)) list
