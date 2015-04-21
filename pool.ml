@@ -16,22 +16,21 @@ end
 
 module Make (C : Connection) = struct
   type conn = C.conn
-  type connection_pool = conn Lwt_sequence.t * int
+  type connection_pool = conn Queue.t * int
 
-  let create_pool ~capacity = (Lwt_sequence.create (), capacity)
+  let create_pool ~capacity = (Queue.create (), capacity)
 
   let with_connection (pool, capacity) f =
-    (match Lwt_sequence.take_opt_l pool with
-    | None -> C.create_connection ()
-    | Some c -> return c
+    (try return (Queue.take pool)
+    with Queue.Empty -> C.create_connection ()
     ) >>= fun connection ->
 
     let save_or_close_connection () =
       C.is_reusable connection >>= function
       | false -> C.close_connection connection
       | true ->
-          if Lwt_sequence.length pool < capacity then
-            let _ = Lwt_sequence.add_r connection pool in
+          if Queue.length pool < capacity then
+            let _ = Queue.add connection pool in
             return ()
           else C.close_connection connection
     in
