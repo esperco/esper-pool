@@ -51,25 +51,20 @@ module Test = struct
   let test_connection_pool () =
     let module Connection =
       struct
-        type conn = int ref * Lwt_mutex.t * bool ref
-        let create_connection () =
-          return (ref 0, Lwt_mutex.create (), ref true)
-        let close_connection _ =
-          return ()
-        let is_reusable (_, _, reusable) =
-          return !reusable
+        type conn = int ref * bool ref
+        let create_connection () = return (ref 0, ref true)
+        let close_connection _ = return ()
+        let is_reusable (_, reusable) = return !reusable
       end
     in
     let module Connection_pool = Make(Connection) in
     let pool = Connection_pool.create_pool ~capacity:3 in
     let t =
       let use_connection () =
-        Connection_pool.with_connection pool (fun (count, mutex, _) ->
-          Lwt_mutex.with_lock mutex (fun () ->
-            incr count;
-            Lwt_unix.sleep 0.25 >>= fun () ->
-            return count
-          )
+        Connection_pool.with_connection pool (fun (count, _) ->
+          incr count;
+          Lwt_unix.sleep 0.25 >>= fun () ->
+          return count
         )
       in
       let ignore_count = use_connection () >>= fun _ -> return () in
@@ -80,12 +75,10 @@ module Test = struct
       assert (!count = 2);
 
       let break_connection () =
-        Connection_pool.with_connection pool (fun (_, mutex, reusable) ->
-          Lwt_mutex.with_lock mutex (fun () ->
-            reusable := false;
-            Lwt_unix.sleep 0.25 >>= fun () ->
-            return ()
-          )
+        Connection_pool.with_connection pool (fun (_, reusable) ->
+          reusable := false;
+          Lwt_unix.sleep 0.25 >>= fun () ->
+          return ()
         )
       in
       join [break_connection (); break_connection (); break_connection ()]
