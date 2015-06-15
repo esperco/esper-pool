@@ -1,4 +1,17 @@
+(*
+   Generic pool of reusable connections.
+
+   - taking a connection from the pool consists in taking a connection from
+     a queue of connections available for reuse; if the queue is empty,
+     a new connection is created
+   - when done with a connection, it is added back to the queue; if the
+     queue is full, the connection is closed and not added to the queue.
+
+   This algorithm doesn't restrict the number of simultaneous connections.
+*)
+
 open Lwt
+open Log
 
 module type Connection = sig
   type conn
@@ -10,34 +23,88 @@ end
 module type S = sig
   type connection_pool
   type conn
-  val create_pool : capacity:int -> connection_pool
+  val create_pool : capacity:int -> max_live_conn:int -> connection_pool
   val with_connection : connection_pool -> (conn -> 'a Lwt.t) -> 'a Lwt.t
 end
 
 module Make (C : Connection) = struct
   type conn = C.conn
-  type connection_pool = conn Queue.t * int
 
-  let create_pool ~capacity = (Queue.create (), capacity)
+  type connection_pool = {
+    (* Queue of reusable connections *)
+    queue : (conn * bool ref) Queue.t;
+      (* the boolean indicates whether the connection is live,
+         consistently with the live connection counter
+         (and not necessarily with the actual state of the connection
+         because of possibility of exceptions and double-closing). *)
+    queue_capacity : int;
 
-  let with_connection (pool, capacity) f =
-    (try return (Queue.take pool)
-    with Queue.Empty -> C.create_connection ()
-    ) >>= fun connection ->
+    (* System for limiting the number of simultaneous connections *)
+    max_live_conn : int;
+      (* maximum number of live (= open) connections *)
+    live_conn : int ref;
+      (* counter of live connections *)
+    live_conn_possible : unit Lwt_condition.t;
+      (* used to wake up a thread when a new connection can be created *)
+  }
+
+  let create_pool ~capacity ~max_live_conn = {
+    queue = Queue.create ();
+    queue_capacity = capacity;
+    max_live_conn;
+    live_conn = ref 0;
+    live_conn_possible = Lwt_condition.create ();
+  }
+
+  let create_connection p =
+    let maybe_wait =
+      if !(p.live_conn) >= p.max_live_conn then (
+        logf `Info "Too many live connections: %i; waiting." !(p.live_conn);
+        Lwt_condition.wait p.live_conn_possible
+      )
+      else
+        return ()
+    in
+    maybe_wait >>= fun () ->
+    C.create_connection () >>= fun conn ->
+    incr p.live_conn;
+    return (conn, ref true)
+
+  let close_connection p (connection, is_live) =
+    C.close_connection connection >>= fun () ->
+    if !is_live then (
+      (* avoid double counting *)
+      decr p.live_conn;
+      is_live := false;
+    );
+    assert (!(p.live_conn) >= 0);
+    if !(p.live_conn) < p.max_live_conn then (
+      (* Wake up one of the waiting threads *)
+      logf `Info "Not too many live connections: %i; waking up waiting thread."
+        !(p.live_conn);
+      Lwt_condition.signal p.live_conn_possible ()
+    );
+    return ()
+
+  let with_connection p f =
+    (try return (Queue.take p.queue)
+     with Queue.Empty -> create_connection p
+    ) >>= fun ((conn, is_live) as connection) ->
 
     let save_or_close_connection () =
-      C.is_reusable connection >>= function
-      | false -> C.close_connection connection
+      C.is_reusable conn >>= function
+      | false -> close_connection p connection
       | true ->
-          if Queue.length pool < capacity then
-            let _ = Queue.add connection pool in
+          if Queue.length p.queue < p.queue_capacity then (
+            Queue.add connection p.queue;
             return ()
-          else C.close_connection connection
+          )
+          else close_connection p connection
     in
 
     catch
       (fun () ->
-        f connection >>= fun result ->
+        f conn >>= fun result ->
         save_or_close_connection () >>= fun () ->
         return result
       )
@@ -58,7 +125,7 @@ module Test = struct
       end
     in
     let module Connection_pool = Make(Connection) in
-    let pool = Connection_pool.create_pool ~capacity:3 in
+    let pool = Connection_pool.create_pool ~capacity:3 ~max_live_conn:5 in
     let t =
       let use_connection () =
         Connection_pool.with_connection pool (fun (count, _) ->

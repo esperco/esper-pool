@@ -10,7 +10,7 @@ end
 module type S = sig
   type conn
   type connection_pool
-  val create_pool : capacity:int -> connection_pool
+  val create_pool : capacity:int -> max_live_conn:int -> connection_pool
   val with_connection : connection_pool -> (conn -> 'a Lwt.t) -> 'a Lwt.t
 end
 
