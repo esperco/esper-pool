@@ -1,13 +1,6 @@
 (*
    Generic pool of reusable connections.
-
-   - taking a connection from the pool consists in taking a connection from
-     a queue of connections available for reuse; if the queue is empty,
-     a new connection is created
-   - when done with a connection, it is added back to the queue; if the
-     queue is full, the connection is closed and not added to the queue.
-
-   This algorithm doesn't restrict the number of simultaneous connections.
+   See mli file.
 *)
 
 open Printf
@@ -45,29 +38,36 @@ module Make (C : Connection) = struct
       (* maximum number of live (= open) connections *)
     live_conn : int ref;
       (* counter of live connections *)
-    live_conn_possible : unit Lwt_condition.t;
+    conn_possible : unit Lwt_condition.t;
       (* used to wake up a thread when a new connection can be created *)
   }
 
-  let create_pool ~capacity ~max_live_conn = {
-    queue = Queue.create ();
-    queue_capacity = capacity;
-    max_live_conn;
-    live_conn = ref 0;
-    live_conn_possible = Lwt_condition.create ();
-  }
+  let create_pool ~capacity ~max_live_conn =
+    if capacity > max_live_conn then
+      invalid_arg "Pool.Make().create_pool: \
+                     pool capacity may not be greater than the maximum number \
+                     of simultaneous connections"
+    else {
+      queue = Queue.create ();
+      queue_capacity = capacity;
+      max_live_conn;
+      live_conn = ref 0;
+      conn_possible = Lwt_condition.create ();
+    }
 
   let create_connection p =
-    let maybe_wait =
-      if !(p.live_conn) >= p.max_live_conn then
-        Lwt_condition.wait p.live_conn_possible
-      else
-        return ()
-    in
-    maybe_wait >>= fun () ->
     C.create_connection () >>= fun conn ->
     incr p.live_conn;
     return (conn, ref true)
+
+  let rec get_connection p =
+    try return (Queue.take p.queue)
+    with Queue.Empty ->
+      if !(p.live_conn) >= p.max_live_conn then
+        Lwt_condition.wait p.conn_possible >>= fun () ->
+        get_connection p
+      else
+        create_connection p
 
   let close_connection p (connection, is_live) =
     Lwt.finalize
@@ -81,25 +81,28 @@ module Make (C : Connection) = struct
          assert (!(p.live_conn) >= 0);
          if !(p.live_conn) < p.max_live_conn then (
            (* Wake up one of the waiting threads *)
-           Lwt_condition.signal p.live_conn_possible ()
+           Lwt_condition.signal p.conn_possible ()
          );
          return ()
       )
 
+  let recycle_connection p connection =
+    Queue.add connection p.queue;
+    Lwt_condition.signal p.conn_possible ()
+
   let with_connection p f =
-    (try return (Queue.take p.queue)
-     with Queue.Empty -> create_connection p
-    ) >>= fun ((conn, is_live) as connection) ->
+    get_connection p >>= fun ((conn, is_live) as connection) ->
 
     let save_or_close_connection () =
       C.is_reusable conn >>= function
       | false -> close_connection p connection
       | true ->
           if Queue.length p.queue < p.queue_capacity then (
-            Queue.add connection p.queue;
+            recycle_connection p connection;
             return ()
           )
-          else close_connection p connection
+          else
+            close_connection p connection
     in
 
     catch
@@ -162,7 +165,7 @@ module Test = struct
      - make sure a close_connection that raise an exception doesn't
        bring the connection counter to a negative value
   *)
-  let test_broken_connection_pool () =
+  let test_broken_connection_pools () =
     let module Connection =
       struct
         type conn = unit
@@ -192,11 +195,27 @@ module Test = struct
     ) [ (); (); (); (); (); (); (); (); (); (); (); ]
     in
     Lwt_main.run job;
+
+    let pool2 = Connection_pool.create_pool ~capacity:1 ~max_live_conn:1 in
+    let job2 =
+      Lwt_list.iter_p (fun () ->
+        catch
+          (fun () ->
+             Connection_pool.with_connection pool2 (fun () ->
+               Lwt_unix.sleep 0.05
+             )
+          )
+          (function Exit -> return ()
+                  | e -> raise e)
+      ) [ (); (); (); (); ]
+    in
+    Lwt_main.run job2;
+
     true
 
   let tests = [
     "test_connection_pool", test_connection_pool;
-    "test_broken_connection_pool", test_broken_connection_pool;
+    "test_broken_connection_pools", test_broken_connection_pools;
   ]
 end
 
