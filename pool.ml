@@ -162,7 +162,7 @@ module Test = struct
 
   (* Goals of this test:
      - make sure it terminates
-     - make sure a close_connection that raise an exception doesn't
+     - make sure a close_connection that raises an exception doesn't
        bring the connection counter to a negative value
   *)
   let test_broken_connection_pools () =
