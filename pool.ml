@@ -44,7 +44,9 @@ module Make (C : Connection) = struct
   }
 
   let create_pool ~capacity ~max_live_conn =
-    if capacity > max_live_conn then
+    if capacity <= 0 then
+      invalid_arg "Pool.Make().create_pool: capacity must be positive"
+    else if capacity > max_live_conn then
       invalid_arg "Pool.Make().create_pool: \
                      pool capacity may not be greater than the maximum number \
                      of simultaneous connections"
@@ -57,8 +59,16 @@ module Make (C : Connection) = struct
     }
 
   let create_connection p =
-    C.create_connection () >>= fun conn ->
     incr p.live_conn;
+    assert (!(p.live_conn) <= p.max_live_conn);
+    (catch
+       C.create_connection
+       (fun e ->
+          decr p.live_conn;
+          assert (!(p.live_conn) >= 0);
+          raise e
+       )
+    ) >>= fun conn ->
     return (conn, ref true)
 
   let rec get_connection p =
@@ -170,9 +180,9 @@ module Test = struct
     let module Connection =
       struct
         type conn = unit
-        let create_connection () = return ()
-        let close_connection () = raise Exit
-        let is_reusable () = return true
+        let create_connection () = Lwt_unix.sleep 0.01
+        let close_connection () = Lwt_unix.sleep 0.01 >>= fun () -> raise Exit
+        let is_reusable () = Lwt_unix.sleep 0.01 >>= fun () -> return true
       end
     in
     let module Connection_pool = Make(Connection) in
