@@ -39,7 +39,8 @@ module Make (C : Connection) = struct
     live_conn : int ref;
       (* counter of live connections *)
     conn_possible : unit Lwt_condition.t;
-      (* used to wake up a thread when a new connection can be created *)
+      (* used to wake up a thread when a new connection can be obtained
+         either by reusing one from the queue or by creating a new one. *)
   }
 
   let create_pool ~capacity ~max_live_conn =
