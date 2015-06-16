@@ -196,6 +196,7 @@ module Test = struct
     in
     Lwt_main.run job;
 
+    (* Check that we don't hang when max_live_conn = capacity *)
     let pool2 = Connection_pool.create_pool ~capacity:1 ~max_live_conn:1 in
     let job2 =
       Lwt_list.iter_p (fun () ->
