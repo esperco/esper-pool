@@ -10,6 +10,7 @@
    This algorithm doesn't restrict the number of simultaneous connections.
 *)
 
+open Printf
 open Lwt
 open Log
 
@@ -58,10 +59,8 @@ module Make (C : Connection) = struct
 
   let create_connection p =
     let maybe_wait =
-      if !(p.live_conn) >= p.max_live_conn then (
-        logf `Info "Too many live connections: %i; waiting." !(p.live_conn);
+      if !(p.live_conn) >= p.max_live_conn then
         Lwt_condition.wait p.live_conn_possible
-      )
       else
         return ()
     in
@@ -71,20 +70,21 @@ module Make (C : Connection) = struct
     return (conn, ref true)
 
   let close_connection p (connection, is_live) =
-    C.close_connection connection >>= fun () ->
-    if !is_live then (
-      (* avoid double counting *)
-      decr p.live_conn;
-      is_live := false;
-    );
-    assert (!(p.live_conn) >= 0);
-    if !(p.live_conn) < p.max_live_conn then (
-      (* Wake up one of the waiting threads *)
-      logf `Info "Not too many live connections: %i; waking up waiting thread."
-        !(p.live_conn);
-      Lwt_condition.signal p.live_conn_possible ()
-    );
-    return ()
+    Lwt.finalize
+      (fun () -> C.close_connection connection)
+      (fun () ->
+         if !is_live then (
+           (* avoid double counting *)
+           decr p.live_conn;
+           is_live := false;
+         );
+         assert (!(p.live_conn) >= 0);
+         if !(p.live_conn) < p.max_live_conn then (
+           (* Wake up one of the waiting threads *)
+           Lwt_condition.signal p.live_conn_possible ()
+         );
+         return ()
+      )
 
   let with_connection p f =
     (try return (Queue.take p.queue)
@@ -157,8 +157,46 @@ module Test = struct
     in
     Util_lwt_main.run t
 
+  (* Goals of this test:
+     - make sure it terminates
+     - make sure a close_connection that raise an exception doesn't
+       bring the connection counter to a negative value
+  *)
+  let test_broken_connection_pool () =
+    let module Connection =
+      struct
+        type conn = unit
+        let create_connection () = return ()
+        let close_connection () = raise Exit
+        let is_reusable () = return true
+      end
+    in
+    let module Connection_pool = Make(Connection) in
+    let pool = Connection_pool.create_pool ~capacity:1 ~max_live_conn:3 in
+    let job =
+      (* In debug mode (Log.level := `Debug), this prints something like
+         +++--++--++--++--++----
+      *)
+      Lwt_list.iter_p (fun () ->
+        catch
+          (fun () ->
+             Connection_pool.with_connection pool (fun () ->
+               if !Log.level = `Debug then printf "+%!";
+               Lwt_unix.sleep 0.05 >>= fun () ->
+               if !Log.level = `Debug then printf "-%!";
+               return ()
+             )
+          )
+          (function Exit -> return ()
+                  | e -> raise e)
+    ) [ (); (); (); (); (); (); (); (); (); (); (); ]
+    in
+    Lwt_main.run job;
+    true
+
   let tests = [
-    ("test_connection_pool", test_connection_pool)
+    "test_connection_pool", test_connection_pool;
+    "test_broken_connection_pool", test_broken_connection_pool;
   ]
 end
 
