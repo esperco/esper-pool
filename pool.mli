@@ -10,6 +10,11 @@
      simultaneously
 *)
 
+val create_throttler : int -> ((unit -> 'a Lwt.t) -> 'a Lwt.t)
+    (* [create_throttler n] creates a function [throttle]
+       which will create an lwt thread as soon as fewer than [n]
+       threads are running. *)
+
 module type Connection = sig
   type conn
   val create_connection : unit -> conn Lwt.t

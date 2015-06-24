@@ -5,7 +5,6 @@
 
 open Printf
 open Lwt
-open Log
 
 module type Connection = sig
   type conn
@@ -128,6 +127,17 @@ module Make (C : Connection) = struct
       )
 end
 
+module Simple = Make (struct
+  type conn = unit
+  let create_connection () = return ()
+  let close_connection () = return ()
+  let is_reusable () = return true
+end)
+
+let create_throttler n =
+  let pool = Simple.create_pool ~capacity:n ~max_live_conn:n in
+  fun f -> Simple.with_connection pool f
+
 module Test = struct
   let test_connection_pool () =
     let module Connection =
@@ -169,7 +179,7 @@ module Test = struct
       use_connection () >>= fun count ->
       return (!count = 1)
     in
-    Util_lwt_main.run t
+    Lwt_main.run t
 
   (* Goals of this test:
      - make sure it terminates
@@ -195,9 +205,9 @@ module Test = struct
         catch
           (fun () ->
              Connection_pool.with_connection pool (fun () ->
-               if !Log.level = `Debug then printf "+%!";
+               (*if !Log.level = `Debug then printf "+%!";*)
                Lwt_unix.sleep 0.05 >>= fun () ->
-               if !Log.level = `Debug then printf "-%!";
+               (*if !Log.level = `Debug then printf "-%!";*)
                return ()
              )
           )
