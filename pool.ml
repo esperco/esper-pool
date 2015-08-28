@@ -65,7 +65,7 @@ module Make (C : Connection) = struct
        (fun e ->
           decr p.live_conn;
           assert (!(p.live_conn) >= 0);
-          raise e
+          Util_exn.reraise e
        )
     ) >>= fun conn ->
     return (conn, ref true)
