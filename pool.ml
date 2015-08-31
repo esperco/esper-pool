@@ -65,7 +65,7 @@ module Make (C : Connection) = struct
        (fun e ->
           decr p.live_conn;
           assert (!(p.live_conn) >= 0);
-          raise e
+          Trax.raise __LOC__ e
        )
     ) >>= fun conn ->
     return (conn, ref true)
@@ -123,7 +123,7 @@ module Make (C : Connection) = struct
       )
       (fun e ->
         save_or_close_connection () >>= fun () ->
-        fail e
+        Trax.raise __LOC__ e
       )
 end
 
@@ -211,8 +211,11 @@ module Test = struct
                return ()
              )
           )
-          (function Exit -> return ()
-                  | e -> raise e)
+          (fun e ->
+             match Trax.unwrap e with
+             | Exit -> return ()
+             | e -> Trax.raise __LOC__ e
+          )
     ) [ (); (); (); (); (); (); (); (); (); (); (); ]
     in
     Lwt_main.run job;
@@ -227,8 +230,10 @@ module Test = struct
                Lwt_unix.sleep 0.05
              )
           )
-          (function Exit -> return ()
-                  | e -> raise e)
+          (fun e ->
+             match Trax.unwrap e with
+             | Exit -> return ()
+             | _ -> Trax.raise __LOC__ e)
       ) [ (); (); (); (); ]
     in
     Lwt_main.run job2;
