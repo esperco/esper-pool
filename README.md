@@ -8,4 +8,5 @@ It won't build as is but most of the code was used in production.
 Description
 -----------
 
-Sorry, no description yet :cry:
+OCaml/Lwt implementation of pools of reusable items (typically connections), 
+growing to a configurable capacity.
